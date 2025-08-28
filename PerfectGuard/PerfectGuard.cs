@@ -15,6 +15,8 @@ public class PerfectGuard : BaseUnityPlugin
 
     private readonly ConfigEntry<KeyCode> _windowKey;
 
+    private TimeSpan _abuseDetectorCleanupAccumulator;
+
     public PerfectGuard()
     {
         Logger = base.Logger;
@@ -31,6 +33,14 @@ public class PerfectGuard : BaseUnityPlugin
     {
         if (Input.GetKeyDown(_windowKey.Value))
             _windowShown = !_windowShown;
+
+        _abuseDetectorCleanupAccumulator += TimeSpan.FromSeconds(Time.deltaTime);
+
+        if (_abuseDetectorCleanupAccumulator >= TimeSpan.FromSeconds(60))
+        {
+            _abuseDetectorCleanupAccumulator -= TimeSpan.FromSeconds(60);
+            AbuseDetector.RunActorCleanup();
+        }
     }
 
     public void OnGUI()
