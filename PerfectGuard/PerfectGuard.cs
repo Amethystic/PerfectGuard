@@ -90,6 +90,7 @@ namespace Marioalexsan.PerfectGuard
             ToggleSystems();
         }
 
+        // Anticrash ported from s0apy's AntiCrash'
         private void ToggleSystems()
         {
             if (EnableMasterSwitch.Value)

@@ -43,39 +43,4 @@ namespace Marioalexsan.PerfectGuard.Patches
         [HarmonyPrefix, HarmonyPatch(typeof(PlayerVisual), nameof(PlayerVisual.Rpc_JumpAttackEffect))]
         static bool CheckServerJump(PlayerVisual __instance) => JumpDetector.TrackIfServerAndCheckBehaviour(__instance._player);
     }
-    
-    [HarmonyPatch(typeof(HostConsole), nameof(HostConsole.Send_ServerMessage))]
-    internal static class PatchHostCommands
-    {
-        // This transpiler ensures the host can still use commands
-        [HarmonyTranspiler]
-        static IEnumerable<CodeInstruction> ExecuteCommandsFromHostConsole(IEnumerable<CodeInstruction> instructions)
-        {
-            return new CodeMatcher(instructions)
-                .MatchForward(false, new CodeMatch(ins => ins.Calls(AccessTools.Method(typeof(HostConsole), nameof(HostConsole.Init_ServerMessage)))))
-                .SetInstruction(new CodeInstruction(System.Reflection.Emit.OpCodes.Call, AccessTools.Method(typeof(PatchHostCommands), nameof(ProcessHostConsoleMessage))))
-                .InstructionEnumeration();
-        }
-
-        internal static void ProcessHostConsoleMessage(HostConsole instance, string message)
-        {
-            if (string.IsNullOrEmpty(message)) return;
-
-            if (message.Trim().StartsWith('/'))
-            {
-                var parts = message.Trim().Substring(1).Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                var command = parts.Length >= 1 ? parts[0] : "";
-                var argument = parts.Length >= 2 ? parts[1] : "";
-                instance._cmdManager.Init_ConsoleCommand(command, argument);
-            }
-            else
-            {
-                // This is a normal message from the host, send it
-                ServerMessage serverMessage = default;
-                serverMessage.servMsg = message;
-                NetworkServer.SendToAll(serverMessage);
-                instance.New_LogMessage(message);
-            }
-        }
-    }
 }
