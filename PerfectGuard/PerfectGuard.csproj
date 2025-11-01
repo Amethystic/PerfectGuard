@@ -50,8 +50,4 @@
         <PackageReference Include="Nessie-EasySettings" Version="1.1.3" Private="False" />
         -->
     </ItemGroup>
-
-    <ItemGroup>
-      <Folder Include="_ThunderstoreBuild\" />
-    </ItemGroup>
 </Project>

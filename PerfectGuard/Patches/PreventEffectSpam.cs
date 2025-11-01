@@ -24,7 +24,7 @@ namespace Marioalexsan.PerfectGuard.Patches
         private static void LogConfirmation(Player player, string effectName)
         {
             if (PerfectGuard.EnableDetailedLogging.Value)
-                PerfectGuard.Log.LogWarning($"Player {player.name} is malicious! Trying to crash the server using {effectName}.");
+                PerfectGuard.Logger.LogWarning($"Player {player.name} is malicious! Trying to crash the server using {effectName}.");
         }
 
         // --- Teleport ---

@@ -17,7 +17,6 @@ namespace Marioalexsan.PerfectGuard
     public class PerfectGuard : BaseUnityPlugin
     {
         internal static new ManualLogSource Logger = null!;
-        internal static ManualLogSource Log = null!;
         private readonly Harmony _harmony = new(ModInfo.GUID);
 
         #region Configuration
@@ -72,9 +71,7 @@ namespace Marioalexsan.PerfectGuard
 
         public PerfectGuard()
         {
-            Log = Logger;
-
-            // --- Configuration Setup ---
+            // -- Configuration Setup ---
             _windowKey = Config.Bind("1. General", "WindowKey", KeyCode.F9, "Key to open the configuration window.");
             EnableMasterSwitch = Config.Bind("1. General", "MasterSwitch", true, "Enable or disable all protections globally.");
             EnableDetailedLogging = Config.Bind("1. General", "DetailedLogging", true, "Log detailed warnings for detected malicious activities.");
@@ -87,8 +84,9 @@ namespace Marioalexsan.PerfectGuard
 
         public void Awake()
         {
+            Logger = base.Logger; 
             _harmony.PatchAll();
-            Log.LogMessage($"{ModInfo.NAME} v{ModInfo.VERSION} has loaded!");
+            Logger.LogMessage($"{ModInfo.NAME} v{ModInfo.VERSION} has loaded!");
 
             EnableMasterSwitch.SettingChanged += (s, e) => ToggleSystems();
             ToggleSystems();
@@ -98,7 +96,7 @@ namespace Marioalexsan.PerfectGuard
         {
             if (EnableMasterSwitch.Value)
             {
-                Log.LogMessage("PerfectGuard is now ACTIVE.");
+                Logger.LogMessage("PerfectGuard is now ACTIVE.");
                 if (_periodicChecksCoroutine == null)
                     _periodicChecksCoroutine = StartCoroutine(PeriodicChecksCoroutine());
                 
@@ -106,7 +104,7 @@ namespace Marioalexsan.PerfectGuard
             }
             else
             {
-                Log.LogWarning("PerfectGuard is now INACTIVE.");
+                Logger.LogWarning("PerfectGuard is now INACTIVE.");
                 if (_periodicChecksCoroutine != null)
                 {
                     StopCoroutine(_periodicChecksCoroutine);
@@ -160,7 +158,7 @@ namespace Marioalexsan.PerfectGuard
         private IEnumerator PeriodicChecksCoroutine()
         {
             yield return new WaitForSeconds(3.0f); // Initial delay
-            Log.LogInfo("Periodic checks started.");
+            Logger.LogInfo("Periodic checks started.");
 
             if (NetworkClient.isConnected)
                 _lastNetworkObjectCount = CountNetworkObjects();
@@ -240,7 +238,7 @@ namespace Marioalexsan.PerfectGuard
                 var handlersField = typeof(NetworkClient).GetField("handlers", BindingFlags.NonPublic | BindingFlags.Static);
                 if (handlersField == null)
                 {
-                    Log.LogError("[Shield] Could not find NetworkClient.handlers field!");
+                    Logger.LogError("[Shield] Could not find NetworkClient.handlers field!");
                     return;
                 }
 
@@ -254,12 +252,12 @@ namespace Marioalexsan.PerfectGuard
                     if(_shieldResetCoroutine != null) StopCoroutine(_shieldResetCoroutine);
                     _shieldResetCoroutine = StartCoroutine(ResetMessageCountersCoroutine());
                     _isShieldActive = true;
-                    Log.LogMessage("[Shield] Global RPC Network Shield is ACTIVE.");
+                    Logger.LogMessage("[Shield] Global RPC Network Shield is ACTIVE.");
                 }
             }
             catch (Exception e)
             {
-                Log.LogError($"[Shield] Failed to initialize Network Shield: {e}");
+                Logger.LogError($"[Shield] Failed to initialize Network Shield: {e}");
             }
         }
 
@@ -283,11 +281,11 @@ namespace Marioalexsan.PerfectGuard
                 OriginalHandlers.Clear();
                 RpcMessageCounts.Clear();
                 _isShieldActive = false;
-                Log.LogMessage("[Shield] Global RPC Network Shield is INACTIVE.");
+                Logger.LogMessage("[Shield] Global RPC Network Shield is INACTIVE.");
             }
             catch (Exception e)
             {
-                Log.LogError($"[Shield] Failed to shutdown Network Shield: {e}");
+                Logger.LogError($"[Shield] Failed to shutdown Network Shield: {e}");
             }
         }
         
@@ -326,7 +324,7 @@ namespace Marioalexsan.PerfectGuard
                         var player = identity.GetComponentInParent<Player>();
                         senderName = player != null ? player._nickname : identity.name;
                     }
-                    Log.LogError($"[Shield] RPC SPAM DETECTED! Blocking excessive calls (Hash: {funcHash}) from sender: {senderName}.");
+                    Logger.LogError($"[Shield] RPC SPAM DETECTED! Blocking excessive calls (Hash: {funcHash}) from sender: {senderName}.");
                 }
                 return; // Block the RPC by not calling the original handler
             }
@@ -352,7 +350,7 @@ namespace Marioalexsan.PerfectGuard
 
             if (delta > NetworkObjectSpikeThreshold)
             {
-                Log.LogError($"[Panic] Object Spike Detected! {delta} new objects. Engaging Panic Cleanup.");
+                Logger.LogError($"[Panic] Object Spike Detected! {delta} new objects. Engaging Panic Cleanup.");
                 StartCoroutine(EngagePanicCleanup());
             }
 
@@ -368,7 +366,7 @@ namespace Marioalexsan.PerfectGuard
                 // Find all active, networked objects that aren't players
                 var allNetIDs = FindObjectsOfType<NetworkIdentity>();
                 if (EnableDetailedLogging.Value)
-                    Log.LogMessage($"[Panic] Scanning {allNetIDs.Length} network objects.");
+                    Logger.LogMessage($"[Panic] Scanning {allNetIDs.Length} network objects.");
 
                 foreach (var netId in allNetIDs)
                 {
@@ -381,12 +379,12 @@ namespace Marioalexsan.PerfectGuard
             }
             catch (Exception e)
             {
-                Log.LogError($"[Panic] Error during neutralization phase: {e}");
+                Logger.LogError($"[Panic] Error during neutralization phase: {e}");
                 _isPanicModeActive = false;
                 yield break;
             }
 
-            Log.LogMessage($"[Panic] Neutralizing {objectsToDestroy.Count} objects.");
+            Logger.LogMessage($"[Panic] Neutralizing {objectsToDestroy.Count} objects.");
             foreach (var go in objectsToDestroy)
             {
                 if (go != null)
@@ -406,7 +404,7 @@ namespace Marioalexsan.PerfectGuard
                 if (i % 50 == 0) yield return null; // Stagger destruction
             }
 
-            Log.LogMessage("[Panic] Cleanup complete.");
+            Logger.LogMessage("[Panic] Cleanup complete.");
             _isPanicModeActive = false;
             _lastNetworkObjectCount = CountNetworkObjects();
         }
@@ -431,14 +429,14 @@ namespace Marioalexsan.PerfectGuard
                 {
                     _serverStuckReportSent = true;
                     DeadServerStatus = "<color=red>Frozen</color>";
-                    Log.LogError("[HealthCheck] Server is unresponsive (latency is frozen).");
+                    Logger.LogError("[HealthCheck] Server is unresponsive (latency is frozen).");
                 }
             }
             else
             {
                 if (_serverStuckReportSent)
                 {
-                     Log.LogMessage("[HealthCheck] Server has recovered and is responsive again.");
+                    Logger.LogMessage("[HealthCheck] Server has recovered and is responsive again.");
                 }
                 _stuckDuration = 0f;
                 _serverStuckReportSent = false;
