@@ -27,6 +27,7 @@ namespace Marioalexsan.PerfectGuard
         public static ConfigEntry<bool> EnableAudioSpamProtection { get; private set; }
         public static ConfigEntry<bool> EnableServerHealthCheck { get; private set; }
         public static ConfigEntry<bool> EnableDetailedLogging { get; private set; }
+        public static ConfigEntry<int> NetworkObjectSpikeThreshold { get; private set; }
         #endregion
 
         #region GUI
@@ -47,20 +48,17 @@ namespace Marioalexsan.PerfectGuard
         #region Global RPC Shield Fields
         private static bool _isShieldActive;
         private static Coroutine _shieldResetCoroutine;
-        private const int RpcSpamThreshold = 40; // Max RPC calls of one type per reset interval
+        private const int RpcSpamThreshold = 40;
         private const float ShieldResetInterval = 0.25f;
         private static readonly Dictionary<ushort, int> RpcMessageCounts = new();
         private static readonly Dictionary<ushort, NetworkMessageDelegate> OriginalHandlers = new();
-        // Whitelist for high-frequency, safe RPCs if needed. Use function hash.
         private static readonly HashSet<ushort> RpcWhitelist = new() { 63450, 15647, 28859 };
         #endregion
 
         #region Object Spike & Health Check Fields
         private Coroutine _periodicChecksCoroutine;
-        private const int NetworkObjectSpikeThreshold = 250;
         private static int _lastNetworkObjectCount;
         private static bool _isPanicModeActive;
-        
         private const float StuckThresholdSeconds = 25f;
         private const float HighLatencyThreshold = 300f;
         private static float _previousLatency;
@@ -71,7 +69,6 @@ namespace Marioalexsan.PerfectGuard
 
         public PerfectGuard()
         {
-            // -- Configuration Setup ---
             _windowKey = Config.Bind("1. General", "WindowKey", KeyCode.F9, "Key to open the configuration window.");
             EnableMasterSwitch = Config.Bind("1. General", "MasterSwitch", true, "Enable or disable all protections globally.");
             EnableDetailedLogging = Config.Bind("1. General", "DetailedLogging", true, "Log detailed warnings for detected malicious activities.");
@@ -80,6 +77,8 @@ namespace Marioalexsan.PerfectGuard
             EnableObjectSpikeProtection = Config.Bind("2. Protections", "ObjectSpikeProtection", true, "Automatically detects and cleans up mass item drop spam.");
             EnableAudioSpamProtection = Config.Bind("2. Protections", "AudioSpamProtection", true, "Prevents crashes from excessive audio source plays.");
             EnableServerHealthCheck = Config.Bind("2. Protections", "ServerHealthCheck", true, "Monitors server latency to detect high lag or server freezes.");
+            
+            NetworkObjectSpikeThreshold = Config.Bind("3. Tuning", "ObjectSpikeThreshold", 150, "The number of new items created in a single frame required to trigger a panic cleanup.");
         }
 
         public void Awake()
@@ -87,7 +86,6 @@ namespace Marioalexsan.PerfectGuard
             Logger = base.Logger; 
             _harmony.PatchAll();
             Logger.LogMessage($"{ModInfo.NAME} v{ModInfo.VERSION} has loaded!");
-
             EnableMasterSwitch.SettingChanged += (s, e) => ToggleSystems();
             ToggleSystems();
         }
@@ -120,7 +118,12 @@ namespace Marioalexsan.PerfectGuard
             if (Input.GetKeyDown(_windowKey.Value))
                 _windowShown = !_windowShown;
 
-            // Cleanup for AbuseDetector class
+            // Run the spike check EVERY FRAME for instant reaction to prevent freezing.
+            if (EnableMasterSwitch.Value && EnableObjectSpikeProtection.Value && !_isPanicModeActive && NetworkClient.isConnected)
+            {
+                CheckForObjectSpikes();
+            }
+
             _abuseDetectorCleanupAccumulator += TimeSpan.FromSeconds(Time.deltaTime);
             if (_abuseDetectorCleanupAccumulator >= TimeSpan.FromSeconds(60))
             {
@@ -139,7 +142,6 @@ namespace Marioalexsan.PerfectGuard
 
         private void DrawWindow(int windowID)
         {
-            // Simple GUI to toggle settings at runtime
             EnableMasterSwitch.Value = GUILayout.Toggle(EnableMasterSwitch.Value, "Enable All Protections (Master Switch)");
             GUILayout.Space(10);
             EnableGlobalRpcShield.Value = GUILayout.Toggle(EnableGlobalRpcShield.Value, "Global RPC Spam Shield");
@@ -157,34 +159,25 @@ namespace Marioalexsan.PerfectGuard
         #region Core Periodic Coroutine
         private IEnumerator PeriodicChecksCoroutine()
         {
-            yield return new WaitForSeconds(3.0f); // Initial delay
-            Logger.LogInfo("Periodic checks started.");
+            yield return new WaitForSeconds(3.0f);
+            Logger.LogInfo("Periodic (slow) checks started.");
 
             if (NetworkClient.isConnected)
-                _lastNetworkObjectCount = CountNetworkObjects();
+                _lastNetworkObjectCount = NetItemObjectManager.Count;
 
             while (true)
             {
                 if (!EnableMasterSwitch.Value)
                 {
-                    yield return new WaitForSeconds(5.0f); // Sleep longer when disabled
+                    yield return new WaitForSeconds(5.0f);
                     continue;
                 }
 
-                if (EnableObjectSpikeProtection.Value && !_isPanicModeActive && NetworkClient.isConnected)
-                {
-                    CheckForObjectSpikes();
-                }
-
                 if (EnableServerHealthCheck.Value && NetworkClient.isConnected)
-                {
                     PerformLatencyCheck();
-                }
                 
-                // Cleanup for audio spam checker
                 CleanupDeadAudioSources();
-
-                yield return new WaitForSeconds(1.0f);
+                yield return new WaitForSeconds(2.0f);
             }
         }
         #endregion
@@ -193,38 +186,21 @@ namespace Marioalexsan.PerfectGuard
         internal static bool CheckAudioCooldown(AudioSource instance)
         {
             if (!EnableMasterSwitch.Value || !EnableAudioSpamProtection.Value || instance == null) return true;
-
-            // Silently block calls on disabled GameObjects to prevent Unity warnings.
             if (!instance.gameObject.activeInHierarchy) return false;
-
             lock (AudioCooldowns)
             {
-                if (AudioCooldowns.TryGetValue(instance, out float cooldownEndTime) && Time.time < cooldownEndTime)
-                {
-                    return false; // Silently block.
-                }
+                if (AudioCooldowns.TryGetValue(instance, out float cooldownEndTime) && Time.time < cooldownEndTime) return false;
                 AudioCooldowns[instance] = Time.time + AudioSpamCooldownSeconds;
             }
             return true;
         }
-        
         private void CleanupDeadAudioSources()
         {
             lock (AudioCooldowns)
             {
                 DeadAudioSources.Clear();
-                foreach (var audioSource in AudioCooldowns.Keys)
-                {
-                    if (audioSource == null) // Check if destroyed
-                    {
-                        DeadAudioSources.Add(audioSource);
-                    }
-                }
-
-                foreach (var deadSource in DeadAudioSources)
-                {
-                    AudioCooldowns.Remove(deadSource);
-                }
+                DeadAudioSources.AddRange(AudioCooldowns.Keys.Where(audioSource => audioSource == null));
+                foreach (var deadSource in DeadAudioSources) AudioCooldowns.Remove(deadSource);
             }
         }
         #endregion
@@ -236,15 +212,9 @@ namespace Marioalexsan.PerfectGuard
             try
             {
                 var handlersField = typeof(NetworkClient).GetField("handlers", BindingFlags.NonPublic | BindingFlags.Static);
-                if (handlersField == null)
-                {
-                    Logger.LogError("[Shield] Could not find NetworkClient.handlers field!");
-                    return;
-                }
-
+                if (handlersField == null) { Logger.LogError("[Shield] Could not find NetworkClient.handlers field!"); return; }
                 var handlers = handlersField.GetValue(null) as Dictionary<ushort, NetworkMessageDelegate>;
                 ushort rpcMsgId = NetworkMessageId<RpcMessage>.Id;
-
                 if (handlers != null && handlers.TryGetValue(rpcMsgId, out var originalHandler))
                 {
                     OriginalHandlers[rpcMsgId] = originalHandler;
@@ -255,12 +225,8 @@ namespace Marioalexsan.PerfectGuard
                     Logger.LogMessage("[Shield] Global RPC Network Shield is ACTIVE.");
                 }
             }
-            catch (Exception e)
-            {
-                Logger.LogError($"[Shield] Failed to initialize Network Shield: {e}");
-            }
+            catch (Exception e) { Logger.LogError($"[Shield] Failed to initialize Network Shield: {e}"); }
         }
-
         private void ShutdownShield()
         {
             if (!_isShieldActive) return;
@@ -269,54 +235,32 @@ namespace Marioalexsan.PerfectGuard
                 var handlersField = typeof(NetworkClient).GetField("handlers", BindingFlags.NonPublic | BindingFlags.Static);
                 var handlers = handlersField?.GetValue(null) as Dictionary<ushort, NetworkMessageDelegate>;
                 ushort rpcMsgId = NetworkMessageId<RpcMessage>.Id;
-
-                if (handlers != null && OriginalHandlers.TryGetValue(rpcMsgId, out var originalHandler))
-                {
-                    handlers[rpcMsgId] = originalHandler; // Restore original handler
-                }
-
+                if (handlers != null && OriginalHandlers.TryGetValue(rpcMsgId, out var originalHandler)) handlers[rpcMsgId] = originalHandler;
                 if (_shieldResetCoroutine != null) StopCoroutine(_shieldResetCoroutine);
                 _shieldResetCoroutine = null;
-
                 OriginalHandlers.Clear();
                 RpcMessageCounts.Clear();
                 _isShieldActive = false;
                 Logger.LogMessage("[Shield] Global RPC Network Shield is INACTIVE.");
             }
-            catch (Exception e)
-            {
-                Logger.LogError($"[Shield] Failed to shutdown Network Shield: {e}");
-            }
+            catch (Exception e) { Logger.LogError($"[Shield] Failed to shutdown Network Shield: {e}"); }
         }
-        
         private static void ThrottledMessageHandler(NetworkConnection conn, NetworkReader reader, int channelId)
         {
             if (!OriginalHandlers.TryGetValue(NetworkMessageId<RpcMessage>.Id, out var originalHandler)) return;
-
             int initialPosition = reader.Position;
-
-            // Read message details to identify the RPC
             if (reader.Remaining < 7) { originalHandler(conn, reader, channelId); return; }
             uint netId = reader.ReadUInt();
-            reader.ReadByte(); // componentIndex
+            reader.ReadByte();
             ushort funcHash = reader.ReadUShort();
-
-            // Reset reader for original handler
             reader.Position = initialPosition;
-
-            if (RpcWhitelist.Contains(funcHash))
-            {
-                originalHandler(conn, reader, channelId);
-                return;
-            }
-
+            if (RpcWhitelist.Contains(funcHash)) { originalHandler(conn, reader, channelId); return; }
             RpcMessageCounts.TryGetValue(funcHash, out int currentCount);
             currentCount++;
             RpcMessageCounts[funcHash] = currentCount;
-
             if (currentCount > RpcSpamThreshold)
             {
-                if (currentCount == RpcSpamThreshold + 1 && EnableDetailedLogging.Value) // Log only once
+                if (currentCount == RpcSpamThreshold + 1 && EnableDetailedLogging.Value)
                 {
                     string senderName = $"netId:{netId}";
                     if (NetworkClient.spawned.TryGetValue(netId, out NetworkIdentity identity) && identity != null)
@@ -326,12 +270,10 @@ namespace Marioalexsan.PerfectGuard
                     }
                     Logger.LogError($"[Shield] RPC SPAM DETECTED! Blocking excessive calls (Hash: {funcHash}) from sender: {senderName}.");
                 }
-                return; // Block the RPC by not calling the original handler
+                return;
             }
-
             originalHandler(conn, reader, channelId);
         }
-
         private static IEnumerator ResetMessageCountersCoroutine()
         {
             while (true)
@@ -345,86 +287,68 @@ namespace Marioalexsan.PerfectGuard
         #region Ported: Object Spike & Health Checks
         private void CheckForObjectSpikes()
         {
-            int currentObjectCount = CountNetworkObjects();
+            int currentObjectCount = NetItemObjectManager.Count;
             int delta = currentObjectCount - _lastNetworkObjectCount;
 
-            if (delta > NetworkObjectSpikeThreshold)
+            if (delta > NetworkObjectSpikeThreshold.Value)
             {
-                Logger.LogError($"[Panic] Object Spike Detected! {delta} new objects. Engaging Panic Cleanup.");
-                StartCoroutine(EngagePanicCleanup());
+                Logger.LogError($"[Panic] Item Spike Detected! {delta} new items in a single frame. Engaging Panic Cleanup.");
+                
+                NeutralizeAllItemsImmediately();
+                StartCoroutine(EngagePanicCleanupCoroutine());
             }
 
             _lastNetworkObjectCount = currentObjectCount;
         }
         
-        private static IEnumerator EngagePanicCleanup()
+        private static void NeutralizeAllItemsImmediately()
+        {
+            var allItems = NetItemObjectManager.AllItemObjects.ToList();
+            if (EnableDetailedLogging.Value)
+                Logger.LogMessage($"[Panic] Neutralizing {allItems.Count} items immediately.");
+
+            foreach (var item in allItems)
+            {
+                if (item == null || item.gameObject == null) continue;
+
+                // Disable immediately to stop visual/physical effects in the same frame.
+                // We dont want the player to be dead immediantly lol.
+                if (item.TryGetComponent<Renderer>(out var renderer)) renderer.enabled = false;
+                if (item.TryGetComponent<Collider>(out var collider)) collider.enabled = false;
+            }
+        }
+
+        // This only handles the slow destruction part.
+        private static IEnumerator EngagePanicCleanupCoroutine()
         {
             _isPanicModeActive = true;
-            var objectsToDestroy = new List<GameObject>();
-            try
-            {
-                // Find all active, networked objects that aren't players
-                var allNetIDs = FindObjectsOfType<NetworkIdentity>();
-                if (EnableDetailedLogging.Value)
-                    Logger.LogMessage($"[Panic] Scanning {allNetIDs.Length} network objects.");
+            var allItems = NetItemObjectManager.AllItemObjects.ToList();
+            
+            yield return null;
 
-                foreach (var netId in allNetIDs)
-                {
-                    if (netId == null || !netId.gameObject.activeInHierarchy) continue;
-                    if (netId.GetComponent<Player>() == null && netId.GetComponent<Collider>() != null)
-                    {
-                        objectsToDestroy.Add(netId.gameObject);
-                    }
-                }
-            }
-            catch (Exception e)
+            Logger.LogMessage($"[Panic] Beginning staggered destruction of {allItems.Count} items.");
+            for (int i = 0; i < allItems.Count; i++)
             {
-                Logger.LogError($"[Panic] Error during neutralization phase: {e}");
-                _isPanicModeActive = false;
-                yield break;
+                if (allItems[i] != null)
+                    Destroy(allItems[i].gameObject);
+                
+                if (i % 50 == 0) yield return null;
             }
 
-            Logger.LogMessage($"[Panic] Neutralizing {objectsToDestroy.Count} objects.");
-            foreach (var go in objectsToDestroy)
-            {
-                if (go != null)
-                {
-                    // Disable immediately, destroy over time
-                    if (go.TryGetComponent<Renderer>(out var renderer)) renderer.enabled = false;
-                    if (go.TryGetComponent<Collider>(out var collider)) collider.enabled = false;
-                }
-            }
-
-            yield return null; // Wait a frame
-
-            for (int i = 0; i < objectsToDestroy.Count; i++)
-            {
-                if (objectsToDestroy[i] != null)
-                    Destroy(objectsToDestroy[i]);
-                if (i % 50 == 0) yield return null; // Stagger destruction
-            }
-
-            Logger.LogMessage("[Panic] Cleanup complete.");
+            Logger.LogMessage("[Panic] Item cleanup complete.");
             _isPanicModeActive = false;
-            _lastNetworkObjectCount = CountNetworkObjects();
+            _lastNetworkObjectCount = NetItemObjectManager.Count;
         }
 
         private static void PerformLatencyCheck()
         {
             Player localPlayer = Player._mainPlayer;
             if (localPlayer == null) return;
-            
-            if (localPlayer.Network_isHostPlayer)
-            {
-                DeadServerStatus = "<color=cyan>Host</color>";
-                return;
-            }
-            
+            if (localPlayer.Network_isHostPlayer) { DeadServerStatus = "<color=cyan>Host</color>"; return; }
             float currentLatency = localPlayer.Network_latency;
-
             if (Mathf.Approximately(currentLatency, _previousLatency))
             {
-                _stuckDuration += 1.0f; // Interval of the coroutine
+                _stuckDuration += 2.0f; // Coroutine runs every 2s
                 if (_stuckDuration >= StuckThresholdSeconds && !_serverStuckReportSent)
                 {
                     _serverStuckReportSent = true;
@@ -434,28 +358,17 @@ namespace Marioalexsan.PerfectGuard
             }
             else
             {
-                if (_serverStuckReportSent)
-                {
-                    Logger.LogMessage("[HealthCheck] Server has recovered and is responsive again.");
-                }
+                if (_serverStuckReportSent) Logger.LogMessage("[HealthCheck] Server has recovered and is responsive again.");
                 _stuckDuration = 0f;
                 _serverStuckReportSent = false;
             }
-
             if (!_serverStuckReportSent)
             {
                 DeadServerStatus = currentLatency > HighLatencyThreshold
                     ? $"<color=orange>Lagging ({currentLatency}ms)</color>"
                     : $"<color=#2bff00>Stable ({currentLatency}ms)</color>";
             }
-
             _previousLatency = currentLatency;
-        }
-
-        private static int CountNetworkObjects()
-        {
-            try { return FindObjectsOfType<NetworkIdentity>().Length; }
-            catch { return 0; }
         }
         #endregion
     }
