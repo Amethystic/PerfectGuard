@@ -157,28 +157,33 @@ namespace Marioalexsan.PerfectGuard
         #region Core Periodic Coroutine
         private IEnumerator PeriodicChecksCoroutine()
         {
-            yield return new WaitForSeconds(3.0f);
+            yield return new WaitForSeconds(3.0f); // Initial delay
             Logger.LogInfo("Periodic checks started.");
 
             if (NetworkClient.isConnected)
-                // --- CHANGE 1: Use the new manager for the initial count ---
-                _lastNetworkObjectCount = NetworkIdentityManager.Count;
+                _lastNetworkObjectCount = CountNetworkObjects();
 
             while (true)
             {
                 if (!EnableMasterSwitch.Value)
                 {
-                    yield return new WaitForSeconds(5.0f);
+                    yield return new WaitForSeconds(5.0f); // Sleep longer when disabled
                     continue;
                 }
 
                 if (EnableObjectSpikeProtection.Value && !_isPanicModeActive && NetworkClient.isConnected)
+                {
                     CheckForObjectSpikes();
+                }
 
                 if (EnableServerHealthCheck.Value && NetworkClient.isConnected)
+                {
                     PerformLatencyCheck();
+                }
                 
+                // Cleanup for audio spam checker
                 CleanupDeadAudioSources();
+
                 yield return new WaitForSeconds(1.0f);
             }
         }
@@ -340,8 +345,7 @@ namespace Marioalexsan.PerfectGuard
         #region Ported: Object Spike & Health Checks
         private void CheckForObjectSpikes()
         {
-            // --- CHANGE 2: Use the new manager for the periodic check ---
-            int currentObjectCount = NetworkIdentityManager.Count;
+            int currentObjectCount = CountNetworkObjects();
             int delta = currentObjectCount - _lastNetworkObjectCount;
 
             if (delta > NetworkObjectSpikeThreshold)
@@ -359,17 +363,18 @@ namespace Marioalexsan.PerfectGuard
             var objectsToDestroy = new List<GameObject>();
             try
             {
-                // --- CHANGE 3: Use the manager's list. Crucially, we make a COPY with .ToList()
-                // This prevents errors if the collection is modified while we iterate over it.
-                var allNetIDs = NetworkIdentityManager.AllIdentities.ToList();
+                // Find all active, networked objects that aren't players
+                var allNetIDs = FindObjectsOfType<NetworkIdentity>();
                 if (EnableDetailedLogging.Value)
-                    Logger.LogMessage($"[Panic] Scanning {allNetIDs.Count} network objects.");
+                    Logger.LogMessage($"[Panic] Scanning {allNetIDs.Length} network objects.");
 
                 foreach (var netId in allNetIDs)
                 {
                     if (netId == null || !netId.gameObject.activeInHierarchy) continue;
                     if (netId.GetComponent<Player>() == null && netId.GetComponent<Collider>() != null)
+                    {
                         objectsToDestroy.Add(netId.gameObject);
+                    }
                 }
             }
             catch (Exception e)
@@ -382,24 +387,26 @@ namespace Marioalexsan.PerfectGuard
             Logger.LogMessage($"[Panic] Neutralizing {objectsToDestroy.Count} objects.");
             foreach (var go in objectsToDestroy)
             {
-                if (go == null) continue;
-                if (go.TryGetComponent<Renderer>(out var renderer)) renderer.enabled = false;
-                if (go.TryGetComponent<Collider>(out var collider)) collider.enabled = false;
+                if (go != null)
+                {
+                    // Disable immediately, destroy over time
+                    if (go.TryGetComponent<Renderer>(out var renderer)) renderer.enabled = false;
+                    if (go.TryGetComponent<Collider>(out var collider)) collider.enabled = false;
+                }
             }
 
-            yield return null;
+            yield return null; // Wait a frame
 
             for (int i = 0; i < objectsToDestroy.Count; i++)
             {
                 if (objectsToDestroy[i] != null)
                     Destroy(objectsToDestroy[i]);
-                if (i % 50 == 0) yield return null;
+                if (i % 50 == 0) yield return null; // Stagger destruction
             }
 
             Logger.LogMessage("[Panic] Cleanup complete.");
             _isPanicModeActive = false;
-            // --- CHANGE 4: Use the new manager for the final count ---
-            _lastNetworkObjectCount = NetworkIdentityManager.Count;
+            _lastNetworkObjectCount = CountNetworkObjects();
         }
 
         private static void PerformLatencyCheck()
@@ -445,11 +452,11 @@ namespace Marioalexsan.PerfectGuard
             _previousLatency = currentLatency;
         }
 
-        // private static int CountNetworkObjects()
-        // {
-        //     try { return FindObjectsOfType<NetworkIdentity>().Length; }
-        //     catch { return 0; }
-        // }
+        private static int CountNetworkObjects()
+        {
+            try { return FindObjectsOfType<NetworkIdentity>().Length; }
+            catch { return 0; }
+        }
         #endregion
     }
 }
