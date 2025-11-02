@@ -364,5 +364,6 @@ namespace Marioalexsan.PerfectGuard
             _previousLatency = currentLatency;
         }
         #endregion
+        // Anticrash ported by s0apy
     }
 }
