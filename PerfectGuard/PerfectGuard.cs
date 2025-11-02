@@ -90,7 +90,6 @@ namespace Marioalexsan.PerfectGuard
             ToggleSystems();
         }
 
-        // Anticrash ported from s0apy's AntiCrash'
         private void ToggleSystems()
         {
             if (EnableMasterSwitch.Value)
@@ -118,8 +117,7 @@ namespace Marioalexsan.PerfectGuard
         {
             if (Input.GetKeyDown(_windowKey.Value))
                 _windowShown = !_windowShown;
-
-            // Run the spike check EVERY FRAME for instant reaction to prevent freezing.
+            
             if (EnableMasterSwitch.Value && EnableObjectSpikeProtection.Value && !_isPanicModeActive && NetworkClient.isConnected)
             {
                 CheckForObjectSpikes();
@@ -294,14 +292,13 @@ namespace Marioalexsan.PerfectGuard
             if (delta > NetworkObjectSpikeThreshold.Value)
             {
                 Logger.LogError($"[Panic] Item Spike Detected! {delta} new items in a single frame. Engaging Panic Cleanup.");
-                
                 NeutralizeAllItemsImmediately();
                 StartCoroutine(EngagePanicCleanupCoroutine());
             }
 
             _lastNetworkObjectCount = currentObjectCount;
         }
-        
+
         private static void NeutralizeAllItemsImmediately()
         {
             var allItems = NetItemObjectManager.AllItemObjects.ToList();
@@ -311,20 +308,15 @@ namespace Marioalexsan.PerfectGuard
             foreach (var item in allItems)
             {
                 if (item == null || item.gameObject == null) continue;
-
-                // Disable immediately to stop visual/physical effects in the same frame.
-                // We dont want the player to be dead immediantly lol.
                 if (item.TryGetComponent<Renderer>(out var renderer)) renderer.enabled = false;
                 if (item.TryGetComponent<Collider>(out var collider)) collider.enabled = false;
             }
         }
-
-        // This only handles the slow destruction part.
+        
         private static IEnumerator EngagePanicCleanupCoroutine()
         {
             _isPanicModeActive = true;
             var allItems = NetItemObjectManager.AllItemObjects.ToList();
-            
             yield return null;
 
             Logger.LogMessage($"[Panic] Beginning staggered destruction of {allItems.Count} items.");
@@ -349,7 +341,7 @@ namespace Marioalexsan.PerfectGuard
             float currentLatency = localPlayer.Network_latency;
             if (Mathf.Approximately(currentLatency, _previousLatency))
             {
-                _stuckDuration += 2.0f; // Coroutine runs every 2s
+                _stuckDuration += 2.0f;
                 if (_stuckDuration >= StuckThresholdSeconds && !_serverStuckReportSent)
                 {
                     _serverStuckReportSent = true;
